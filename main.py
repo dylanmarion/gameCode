@@ -658,15 +658,45 @@ def main():
                 
                 # Normal tile rendering for discovered areas
                 if tilemap[y][x] == 1:
-                    color = WALL_COLOR
+                    # Only render walls that are adjacent to non-wall tiles (visible edges)
+                    is_visible_wall = False
+                    for dy in [-1, 0, 1]:
+                        for dx in [-1, 0, 1]:
+                            if dx == 0 and dy == 0:
+                                continue
+                            check_x, check_y = x + dx, y + dy
+                            if (0 <= check_x < GRID_WIDTH and 0 <= check_y < GRID_HEIGHT and
+                                tilemap[check_y][check_x] != 1):  # Adjacent to non-wall
+                                is_visible_wall = True
+                                break
+                        if is_visible_wall:
+                            break
+                    
+                    if is_visible_wall:
+                        color = WALL_COLOR
+                        screen_x = x * TILE_SIZE - camera.rect.x
+                        screen_y = y * TILE_SIZE - camera.rect.y
+                        pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                 elif tilemap[y][x] == 2:
                     color = DOOR_COLOR
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                 elif tilemap[y][x] == 3:
                     color = CHEST_COLOR  # Unlocked chest
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                 elif tilemap[y][x] == 4:
                     color = LOCKED_CHEST_COLOR  # Locked chest
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                 elif tilemap[y][x] == 5:
                     color = HOLE_COLOR  # Hole tile
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                 else:
                     # Check if this floor tile is in a shop room or boss room
                     in_shop_room = False
@@ -687,13 +717,16 @@ def main():
                         color = SHOP_COLOR
                     else:
                         color = FLOOR_COLOR
-                screen_x = x * TILE_SIZE - camera.rect.x
-                screen_y = y * TILE_SIZE - camera.rect.y
-                pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
 
                 # Fog overlay - hide floors, doors, chests, and holes that haven't been explored or aren't currently visible
-                # Walls are always visible once explored (no fog on walls)
+                # Walls are always visible once explored (no fog on walls) and only visible walls are drawn
                 if tilemap[y][x] in [0, 2, 3, 4, 5]:  # Floors, doors, unlocked chests, locked chests, and holes get fog overlay
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    
                     if not exploredmap[y][x]:
                         # Completely black if never explored
                         pygame.draw.rect(screen, BLACK, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
