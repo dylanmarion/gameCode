@@ -1,6 +1,7 @@
 import pygame
 import sys
 import random
+import math
 from utils.room_generator import generate_rooms, connect_rooms
 from entities.player import Player
 from entities.wall import Wall
@@ -33,6 +34,9 @@ LOCKED_CHEST_COLOR = (34, 139, 34)  # Forest green for locked chest
 SHOP_COLOR = (138, 43, 226)  # Blue violet for shop floors
 BOSS_COLOR = (220, 20, 20)  # Red for boss room floors
 HOLE_COLOR = (20, 20, 20)  # Dark gray for hole tiles
+OPENED_CHEST_COLOR = (139, 69, 19)  # Saddle brown for opened chests
+INTERACTION_RING_COLOR = (255, 255, 0)  # Yellow ring for interactable objects
+INTERACTION_DISTANCE = 60  # Pixels - how close player needs to be to interact
 # Set up screen and clock
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SCALED | pygame.FULLSCREEN)
 pygame.display.set_caption("Procedural Roguelike TD Puzzle Game")
@@ -50,6 +54,117 @@ hallway_networks = {}  # Cache revealed hallway networks to avoid repeated flood
 fog_tile = pygame.Surface((TILE_SIZE, TILE_SIZE))
 fog_tile.set_alpha(180)
 fog_tile.fill((0, 0, 0))
+
+# Track opened chests (store center coordinates of 2x2 chests)
+opened_chests = set()
+
+def find_chest_center_near_player(player_rect, tilemap, tile_size, interaction_distance):
+    """Find the center of a 2x2 chest near the player"""
+    player_center_x = player_rect.centerx
+    player_center_y = player_rect.centery
+    
+    # Search around the player for chest tiles
+    search_radius = interaction_distance // tile_size + 3
+    player_grid_x = player_center_x // tile_size
+    player_grid_y = player_center_y // tile_size
+    
+    for dy in range(-search_radius, search_radius + 1):
+        for dx in range(-search_radius, search_radius + 1):
+            check_x = player_grid_x + dx
+            check_y = player_grid_y + dy
+            
+            # Bounds check
+            if not (0 <= check_x < GRID_WIDTH and 0 <= check_y < GRID_HEIGHT):
+                continue
+                
+            # Check if this is a chest tile
+            if tilemap[check_y][check_x] in [3, 4]:  # Unlocked or locked chest
+                # Find the top-left corner of the 2x2 chest
+                chest_top_left_x, chest_top_left_y = find_chest_top_left(check_x, check_y, tilemap)
+                
+                if chest_top_left_x is None:
+                    continue
+                    
+                # Calculate chest center and bounds in pixels
+                chest_center_x = (chest_top_left_x + 1) * tile_size  # Center of 2x2 chest
+                chest_center_y = (chest_top_left_y + 1) * tile_size
+                
+                # Calculate chest bounds (2x2 chest area)
+                chest_left = chest_top_left_x * tile_size
+                chest_right = (chest_top_left_x + 2) * tile_size
+                chest_top = chest_top_left_y * tile_size
+                chest_bottom = (chest_top_left_y + 2) * tile_size
+                
+                # Calculate distance from player to nearest point on chest perimeter
+                # Find closest point on chest rectangle to player center
+                closest_x = max(chest_left, min(player_center_x, chest_right))
+                closest_y = max(chest_top, min(player_center_y, chest_bottom))
+                
+                # Distance from player to closest point on chest
+                distance = ((player_center_x - closest_x) ** 2 + (player_center_y - closest_y) ** 2) ** 0.5
+                
+                if distance <= interaction_distance:
+                    chest_type = "unlocked" if tilemap[check_y][check_x] == 3 else "locked"
+                    return {
+                        'center_x': chest_top_left_x + 1,  # Grid coordinates of center
+                        'center_y': chest_top_left_y + 1,
+                        'top_left_x': chest_top_left_x,
+                        'top_left_y': chest_top_left_y,
+                        'type': chest_type,
+                        'tile_value': tilemap[check_y][check_x],
+                        'pixel_center_x': chest_center_x,
+                        'pixel_center_y': chest_center_y,
+                        'distance': distance
+                    }
+    
+    return None
+
+def find_chest_top_left(grid_x, grid_y, tilemap):
+    """Find the top-left corner of a 2x2 chest given any tile of the chest"""
+    chest_value = tilemap[grid_y][grid_x]
+    
+    # Check all possible top-left positions for a 2x2 chest that includes this tile
+    for top_y in range(max(0, grid_y - 1), min(GRID_HEIGHT - 1, grid_y + 1)):
+        for top_x in range(max(0, grid_x - 1), min(GRID_WIDTH - 1, grid_x + 1)):
+            # Check if there's a valid 2x2 chest starting at this position
+            if (top_x + 1 < GRID_WIDTH and top_y + 1 < GRID_HEIGHT and
+                tilemap[top_y][top_x] == chest_value and
+                tilemap[top_y][top_x + 1] == chest_value and
+                tilemap[top_y + 1][top_x] == chest_value and
+                tilemap[top_y + 1][top_x + 1] == chest_value):
+                
+                # Check if the given grid position is part of this 2x2 chest
+                if (top_x <= grid_x <= top_x + 1 and top_y <= grid_y <= top_y + 1):
+                    return top_x, top_y
+    
+    return None, None
+
+def open_chest(chest_info, tilemap, opened_chests):
+    """Open a 2x2 chest and handle the rewards"""
+    chest_center = (chest_info['center_x'], chest_info['center_y'])
+    
+    # Check if already opened
+    if chest_center in opened_chests:
+        return False, "Chest already opened"
+    
+    # Check if it's a locked chest
+    if chest_info['type'] == "locked":
+        return False, "Chest is locked - you need a key"
+    
+    # Open the chest - mark as opened
+    opened_chests.add(chest_center)
+    
+    # Change all 4 tiles of the 2x2 chest to opened chest tiles (tile type 6)
+    top_left_x = chest_info['top_left_x']
+    top_left_y = chest_info['top_left_y']
+    
+    tilemap[top_left_y][top_left_x] = 6  # New opened chest tile type
+    tilemap[top_left_y][top_left_x + 1] = 6
+    tilemap[top_left_y + 1][top_left_x] = 6
+    tilemap[top_left_y + 1][top_left_x + 1] = 6
+    
+    print(f"✨ Opened {chest_info['type']} chest! You found some treasure!")
+    return True, "You found some treasure!"
 
 def spawn_enemies_in_rooms(rooms, walls, tile_size):
     """Spawn enemies randomly in rooms (excluding spawn room, chest rooms, and shop rooms)"""
@@ -427,6 +542,15 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_e:  # E key for chest interaction
+                    chest_info = find_chest_center_near_player(player.rect, tilemap, TILE_SIZE, INTERACTION_DISTANCE)
+                    if chest_info:
+                        success, message = open_chest(chest_info, tilemap, opened_chests)
+                        if success:
+                            print(f"💰 {message}")
+                        else:
+                            print(f"❌ {message}")
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left mouse button
                     mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -697,6 +821,11 @@ def main():
                     screen_x = x * TILE_SIZE - camera.rect.x
                     screen_y = y * TILE_SIZE - camera.rect.y
                     pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
+                elif tilemap[y][x] == 6:
+                    color = OPENED_CHEST_COLOR  # Opened chest
+                    screen_x = x * TILE_SIZE - camera.rect.x
+                    screen_y = y * TILE_SIZE - camera.rect.y
+                    pygame.draw.rect(screen, color, (screen_x, screen_y, TILE_SIZE, TILE_SIZE))
                 else:
                     # Check if this floor tile is in a shop room or boss room
                     in_shop_room = False
@@ -723,7 +852,7 @@ def main():
 
                 # Fog overlay - hide floors, doors, chests, and holes that haven't been explored or aren't currently visible
                 # Walls are always visible once explored (no fog on walls) and only visible walls are drawn
-                if tilemap[y][x] in [0, 2, 3, 4, 5]:  # Floors, doors, unlocked chests, locked chests, and holes get fog overlay
+                if tilemap[y][x] in [0, 2, 3, 4, 5, 6]:  # Floors, doors, unlocked chests, locked chests, holes, and opened chests get fog overlay
                     screen_x = x * TILE_SIZE - camera.rect.x
                     screen_y = y * TILE_SIZE - camera.rect.y
                     
@@ -800,6 +929,18 @@ def main():
                         screen_x = x * TILE_SIZE - camera.rect.x
                         screen_y = y * TILE_SIZE - camera.rect.y
                         pygame.draw.rect(screen, (255, 255, 255), (screen_x-1, screen_y-1, TILE_SIZE+2, TILE_SIZE+2), 2)
+
+        # Draw interaction outline around nearby chests
+        chest_info = find_chest_center_near_player(player.rect, tilemap, TILE_SIZE, INTERACTION_DISTANCE)
+        if chest_info:
+            # Calculate screen position for the chest outline (top-left corner of 2x2 chest)
+            outline_screen_x = (chest_info['top_left_x'] * TILE_SIZE) - camera.rect.x
+            outline_screen_y = (chest_info['top_left_y'] * TILE_SIZE) - camera.rect.y
+            
+            # Draw yellow square outline around the 2x2 chest
+            outline_rect = pygame.Rect(outline_screen_x - 2, outline_screen_y - 2, 
+                                     TILE_SIZE * 2 + 4, TILE_SIZE * 2 + 4)
+            pygame.draw.rect(screen, INTERACTION_RING_COLOR, outline_rect, 3)
 
         # Draw player (only if on screen)
         player_screen_rect = camera.apply(player)
