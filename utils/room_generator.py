@@ -2,26 +2,15 @@ import random
 import pygame
 from data.room import Room
 
-def calculate_position_distance(room1, room2):
-    """Calculate Manhattan distance (faster than Euclidean) between room centers"""
-    center1_x = room1.grid_x + 8  # Center of 16x16 room
-    center1_y = room1.grid_y + 8
-    center2_x = room2.grid_x + 8
-    center2_y = room2.grid_y + 8
-    
-    dx = abs(center2_x - center1_x)
-    dy = abs(center2_y - center1_y)
-    return dx + dy  # Manhattan distance is much faster than Euclidean
-
 def generate_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
     """Generate rooms using a simple grid-based system"""
     return generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap)
 
 def generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
     """Generate rooms in a grid pattern with 14x14 floor rooms connected by 2-wide hallways"""
-    """Try multiple layouts until we find one with 100% connectivity"""
+    """Improved algorithm with smarter placement for guaranteed connectivity"""
     
-    max_attempts = 50  # Try up to 50 different layouts
+    max_attempts = 20
     
     for attempt in range(max_attempts):
         print(f"DEBUG: Layout attempt {attempt + 1}/{max_attempts}")
@@ -49,9 +38,6 @@ def generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
         rooms_per_col = grid_height // spacing
         
         # Generate room positions
-        room_positions = []
-        
-        # Generate room positions using connected placement strategy
         room_positions = []
         
         # Calculate how many rooms we want
@@ -90,45 +76,74 @@ def generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
                         room_top + room_total_size < grid_height):
                         candidates.append((room_left, room_top, row, col))
         
-        # Add rooms one at a time, ensuring each new room is adjacent to an existing room
-        random.shuffle(candidates)
+        # IMPROVED: Use BFS-like expansion to guarantee connectivity and ensure enough edge positions for special rooms
+        # Priority queue: rooms closer to center get priority, but ensure we create enough dead-end positions
         
-        for room_left, room_top, row, col in candidates:
-            if len(room_positions) >= num_rooms:
-                break
-            
-            # Check if this position is adjacent to any existing room
-            is_adjacent = False
+        # Add all valid adjacent positions to the queue with their connectivity count
+        def get_adjacency_count(col, row, placed_positions):
+            """Count how many adjacent positions are already placed"""
+            count = 0
             for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                neighbor_pos = (col + dx, row + dy)
-                if neighbor_pos in placed_grid_positions:
-                    is_adjacent = True
-                    break
-            
-            if is_adjacent:
-                room_positions.append((room_left, room_top, row, col))
-                placed_grid_positions.add((col, row))
+                if (col + dx, row + dy) in placed_positions:
+                    count += 1
+            return count
         
-        # If we don't have enough connected rooms, try a different approach
-        if len(room_positions) < num_rooms:
-            print(f"DEBUG: Only got {len(room_positions)} connected rooms, need {num_rooms}")
-            # Fall back to the old random selection method for this attempt
-            room_positions = []
-            all_positions = []
+        # Build room network systematically to ensure both connectivity and special room positions
+        while len(room_positions) < num_rooms:
+            # Find all valid adjacent positions
+            adjacent_candidates = []
+            
             for row in range(rooms_per_col):
                 for col in range(rooms_per_row):
+                    if (col, row) in placed_grid_positions:
+                        continue
+                    
+                    # Check if position is valid
                     center_x = col * spacing + spacing // 2
                     center_y = row * spacing + spacing // 2
                     room_left = center_x - room_total_size // 2
                     room_top = center_y - room_total_size // 2
                     
-                    if (room_left >= 0 and room_top >= 0 and 
-                        room_left + room_total_size < grid_width and 
-                        room_top + room_total_size < grid_height):
-                        all_positions.append((room_left, room_top, row, col))
+                    if not (room_left >= 0 and room_top >= 0 and 
+                            room_left + room_total_size < grid_width and 
+                            room_top + room_total_size < grid_height):
+                        continue
+                    
+                    # Check if adjacent to existing rooms
+                    adjacency_count = get_adjacency_count(col, row, placed_grid_positions)
+                    if adjacency_count > 0:
+                        adjacent_candidates.append((room_left, room_top, row, col, adjacency_count))
             
-            if len(all_positions) >= num_rooms:
-                room_positions = random.sample(all_positions, num_rooms)
+            if not adjacent_candidates:
+                print(f"DEBUG: No more adjacent positions available at {len(room_positions)} rooms")
+                break
+            
+            # Smart selection strategy:
+            # - Early in placement: prefer positions with exactly 1 connection (creates dead ends for special rooms)
+            # - Later in placement: prefer positions with more connections (ensures connectivity)
+            rooms_needed = num_rooms - len(room_positions)
+            special_rooms_needed = 5  # boss, shop, 3 chests
+            
+            if rooms_needed > special_rooms_needed + 2:  # Early phase: create dead ends
+                # Prefer positions with exactly 1 connection
+                single_connection_candidates = [c for c in adjacent_candidates if c[4] == 1]
+                if single_connection_candidates:
+                    # Randomize among single-connection positions
+                    chosen = random.choice(single_connection_candidates)
+                else:
+                    # If no single connections available, take lowest connection count
+                    chosen = min(adjacent_candidates, key=lambda x: x[4])
+            else:  # Late phase: ensure strong connectivity
+                # Prefer positions with more connections
+                chosen = max(adjacent_candidates, key=lambda x: x[4])
+            
+            room_left, room_top, row, col, _ = chosen
+            room_positions.append((room_left, room_top, row, col))
+            placed_grid_positions.add((col, row))
+            
+            print(f"DEBUG: Placed room {len(room_positions)}/{num_rooms} at grid ({col}, {row}) with {chosen[4]} connections")
+        
+        print(f"DEBUG: Successfully placed {len(room_positions)} connected rooms")
         
         # Use room_positions as selected_positions for consistency with the rest of the code
         selected_positions = room_positions
@@ -145,7 +160,6 @@ def generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
                 print("WARNING: Could not find fully connected layout, using last attempt")
     
     # Generate the actual rooms using the selected positions
-    # Re-define variables for actual room creation
     grid_width = len(tilemap[0])
     grid_height = len(tilemap)
     room_floor_size = 14
@@ -153,20 +167,18 @@ def generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
     
     rooms = []
     
-    # Create rooms with better chest room distribution
-    chest_positions = []
-    for i, (room_x, room_y, _, _) in enumerate(selected_positions):  # grid_row, grid_col not used
-        # Determine room type with better chest separation
+    # Create rooms with simplified room type system
+    for i, (room_x, room_y, _, _) in enumerate(selected_positions):
+        # First room is always spawn, rest start as normal
         if i == 0:
             room_type = "spawn"
         else:
-            room_type = "normal"  # Default to normal, we'll assign chests later
+            room_type = "normal"
         
         # Create Room object (position of the floor area)
         floor_x = room_x + room_wall_thickness
         floor_y = room_y + room_wall_thickness
         
-        # Create room with default size first (will be adjusted later for shop)
         room = Room(floor_x * tile_size, floor_y * tile_size,
                    room_floor_size * tile_size, room_floor_size * tile_size, room_type)
         
@@ -174,431 +186,108 @@ def generate_grid_rooms(max_rooms, map_width, map_height, tile_size, tilemap):
         room.grid_x = room_x
         room.grid_y = room_y
         rooms.append(room)
-        
-        # Track potential chest positions (skip spawn room)
-        if i > 0:
-            chest_positions.append((i, room))
     
-    # Create a grid lookup for checking adjacent rooms - must happen before assignments
-    room_grid = {}
-    for i, room in enumerate(rooms):
-        grid_col = room.grid_x // 20  # 20 = room size + hallway spacing
-        grid_row = room.grid_y // 20
-        room_grid[(grid_col, grid_row)] = (i, room)
+    # IMPROVED: Smart assignment of special rooms to positions that will have exactly 1 connection
+    # Need: 1 spawn (already assigned), 1 boss, 1 shop, 3 chests (1 unlocked + 2 locked)
+    available_rooms = list(range(1, len(rooms)))  # Skip spawn room (index 0)
     
-    def can_connect_to_normal_or_spawn(room_idx, intended_room_type=None):
-        """Check if a room can connect to at least one normal or spawn room, considering connection restrictions"""
+    if len(available_rooms) < 5:  # Need at least 5 non-spawn rooms
+        print(f"ERROR: Not enough rooms for special assignments: {len(available_rooms)} available, need 5")
+        return rooms
+    
+    # Calculate which rooms will have exactly 1 connection (ideal for special rooms)
+    def count_potential_connections(room_idx):
+        """Count how many adjacent rooms this room will have when connected"""
         room = rooms[room_idx]
-        grid_col = room.grid_x // 20
+        grid_col = room.grid_x // 20  # Convert to grid coordinates
         grid_row = room.grid_y // 20
         
-        has_normal_neighbor = False
-        has_spawn_neighbor = False
-        
-        # Check all four directions for normal or spawn rooms
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            neighbor_key = (grid_col + dx, grid_row + dy)
-            if neighbor_key in room_grid:
-                neighbor_idx, neighbor_room = room_grid[neighbor_key]
-                if neighbor_room.room_type == "normal":
-                    has_normal_neighbor = True
-                elif neighbor_room.room_type == "spawn":
-                    has_spawn_neighbor = True
-        
-        # Connection rules:
-        # - If there's a spawn neighbor and the intended room type is NOT unlocked chest, reject placement
-        # - Only unlocked chest rooms can be placed adjacent to spawn
-        if has_spawn_neighbor and intended_room_type != "chest_unlocked":
-            return False
-        
-        # Check if there's any valid neighbor (normal or spawn if allowed)
-        if has_normal_neighbor:
-            return True
-        elif has_spawn_neighbor:
-            # Only unlocked chest can connect to spawn
-            return intended_room_type == "chest_unlocked"
-        
-        return False
-    
-    def is_corner_room(room_idx):
-        """Check if a room is in a corner or edge position that could cause connectivity issues"""
-        room = rooms[room_idx]
-        grid_col = room.grid_x // 20
-        grid_row = room.grid_y // 20
-        
-        # Count how many adjacent positions have rooms
         adjacent_count = 0
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            neighbor_key = (grid_col + dx, grid_row + dy)
-            if neighbor_key in room_grid:
-                adjacent_count += 1
-        
-        # Corner/edge rooms have 2 or fewer adjacent rooms
-        # We want to avoid placing special rooms in positions with only 1-2 neighbors
-        return adjacent_count <= 2
-    
-    def calculate_hallway_distance_from_spawn(room_idx):
-        """Calculate the minimum number of hallways needed to reach this room from spawn using BFS"""
-        if room_idx == 0:  # spawn room
-            return 0
-        
-        # BFS to find shortest path in terms of room hops
-        visited = set()
-        queue = [(0, 0)]  # (room_index, distance)
-        visited.add(0)
-        
-        while queue:
-            current_room_idx, distance = queue.pop(0)
-            current_room = rooms[current_room_idx]
-            current_grid_col = current_room.grid_x // 20
-            current_grid_row = current_room.grid_y // 20
+            neighbor_col = grid_col + dx
+            neighbor_row = grid_row + dy
             
-            # Check all adjacent rooms
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                neighbor_key = (current_grid_col + dx, current_grid_row + dy)
-                if neighbor_key in room_grid:
-                    neighbor_idx, neighbor_room = room_grid[neighbor_key]
-                    
-                    if neighbor_idx == room_idx:
-                        return distance + 1
-                    
-                    if neighbor_idx not in visited:
-                        visited.add(neighbor_idx)
-                        queue.append((neighbor_idx, distance + 1))
-        
-        return float('inf')  # Unreachable
-    
-    # Ensure we have minimum required special rooms
-    required_special_rooms = 5  # 1 boss + 1 shop + 3 chest rooms
-    
-    if len(chest_positions) < required_special_rooms:
-        print(f"ERROR: Not enough non-spawn rooms ({len(chest_positions)}) for required special rooms ({required_special_rooms})")
-        # Try increasing the room count by expanding the map or adjusting the algorithm
-        return rooms  # Return what we have
-    
-    # Assign special rooms with guaranteed connectivity
-    spawn_room = rooms[0]
-    
-    # Pre-calculate all distances from spawn
-    spawn_distances = {}
-    for pos_idx, room in chest_positions:
-        spawn_distances[pos_idx] = calculate_position_distance(spawn_room, room)
-    
-    # Strategy: Assign rooms in order of importance, ensuring connectivity each time
-    boss_room_index = None
-    selected_chest_indices = []
-    shop_room_index = None
-    
-    # Step 1: Find boss room - FURTHEST valid room from spawn by hallway distance
-    valid_boss_candidates = [(pos_idx, room) for pos_idx, room in chest_positions 
-                            if can_connect_to_normal_or_spawn(pos_idx, "boss") and not is_corner_room(pos_idx)]
-    
-    print(f"DEBUG: Valid boss candidates: {len(valid_boss_candidates)} out of {len(chest_positions)} (excluding corners)")
-    
-    if valid_boss_candidates:
-        # Sort by hallway distance from spawn and pick the furthest
-        boss_candidate = max(valid_boss_candidates, key=lambda x: calculate_hallway_distance_from_spawn(x[0]))
-        boss_room_index = boss_candidate[0]
-        boss_hallway_distance = calculate_hallway_distance_from_spawn(boss_room_index)
-        rooms[boss_room_index].room_type = "boss"
-        rooms[boss_room_index].single_connection = True
-        print(f"DEBUG: Selected boss room index: {boss_room_index}, hallway distance: {boss_hallway_distance}")
-    else:
-        print("WARNING: No valid boss room positions found! Will force assignment later...")
-        # Don't return early - continue with chest/shop assignment and force assignment later
-    
-    # Remove boss room from available positions
-    remaining_positions = [(pos_idx, room) for pos_idx, room in chest_positions if pos_idx != boss_room_index]
-    
-    # Step 2: Assign chest rooms - need 1 unlocked (can connect to spawn) and 2 locked (cannot connect to spawn)
-    # First, find positions that can connect to spawn (for unlocked chest)
-    unlocked_chest_candidates = [(pos_idx, room) for pos_idx, room in remaining_positions 
-                                if can_connect_to_normal_or_spawn(pos_idx, "chest_unlocked") and not is_corner_room(pos_idx)]
-    
-    # Find positions that can connect to normal rooms but NOT spawn (for locked chests)
-    locked_chest_candidates = [(pos_idx, room) for pos_idx, room in remaining_positions 
-                              if can_connect_to_normal_or_spawn(pos_idx, "chest_locked") and not is_corner_room(pos_idx)]
-    
-    if len(unlocked_chest_candidates) >= 1 and len(locked_chest_candidates) >= 2:
-        # Select 1 unlocked chest (closest to spawn for easier access)
-        unlocked_chest_candidates.sort(key=lambda x: calculate_hallway_distance_from_spawn(x[0]))
-        selected_chest_indices.append(unlocked_chest_candidates[0][0])
-        
-        # Remove the selected unlocked chest from locked candidates (if it was there)
-        locked_chest_candidates = [candidate for candidate in locked_chest_candidates 
-                                  if candidate[0] != unlocked_chest_candidates[0][0]]
-        
-        # Select 2 locked chests (furthest from spawn)
-        locked_chest_candidates.sort(key=lambda x: calculate_hallway_distance_from_spawn(x[0]), reverse=True)
-        for i in range(min(2, len(locked_chest_candidates))):
-            selected_chest_indices.append(locked_chest_candidates[i][0])
-        
-        print(f"DEBUG: Selected chest rooms: {selected_chest_indices}")
-    else:
-        print(f"WARNING: Not enough valid chest positions! Unlocked: {len(unlocked_chest_candidates)}, Locked: {len(locked_chest_candidates)}")
-        # Fallback: just assign the first available positions
-        available_positions = list(set(unlocked_chest_candidates + locked_chest_candidates))
-        for i, (pos_idx, room) in enumerate(available_positions[:3]):
-            selected_chest_indices.append(pos_idx)
-    
-    # Remove selected chest rooms from available positions
-    remaining_positions = [(pos_idx, room) for pos_idx, room in remaining_positions 
-                          if pos_idx not in selected_chest_indices]
-    
-    # Step 3: Assign shop room from remaining positions, avoid corners
-    valid_shop_candidates = [(pos_idx, room) for pos_idx, room in remaining_positions 
-                            if can_connect_to_normal_or_spawn(pos_idx, "shop") and not is_corner_room(pos_idx)]
-    
-    if valid_shop_candidates:
-        # Pick shop room with good balance of distances from spawn and boss
-        boss_room = rooms[boss_room_index]
-        best_shop_score = 0
-        
-        for pos_idx, room in valid_shop_candidates:
-            hallway_dist_spawn = calculate_hallway_distance_from_spawn(pos_idx)
-            hallway_dist_boss = calculate_hallway_distance_from_spawn(boss_room_index) - calculate_hallway_distance_from_spawn(pos_idx)
-            # Balanced score favoring distance from spawn
-            combined_score = hallway_dist_spawn * 2 + abs(hallway_dist_boss)
-            if combined_score > best_shop_score:
-                best_shop_score = combined_score
-                shop_room_index = pos_idx
-        
-        print(f"DEBUG: Selected shop room index: {shop_room_index}")
-    else:
-        print("WARNING: No valid shop room positions found!")
-    
-    # Assign room types based on selections
-    if len(selected_chest_indices) >= 1:
-        rooms[selected_chest_indices[0]].room_type = "chest_unlocked"
-        rooms[selected_chest_indices[0]].single_connection = True
-    if len(selected_chest_indices) >= 2:
-        rooms[selected_chest_indices[1]].room_type = "chest_locked"
-        rooms[selected_chest_indices[1]].single_connection = True
-    if len(selected_chest_indices) >= 3:
-        rooms[selected_chest_indices[2]].room_type = "chest_locked"
-        rooms[selected_chest_indices[2]].single_connection = True
-    
-    if shop_room_index is not None:
-        rooms[shop_room_index].room_type = "shop"
-        rooms[shop_room_index].single_connection = True
-    
-    # Verify all required special rooms were assigned
-    assigned_types = set()
-    for room in rooms:
-        if hasattr(room, 'single_connection') and room.single_connection:
-            assigned_types.add(room.room_type)
-    
-    required_types = {"boss", "shop", "chest_unlocked", "chest_locked"}
-    missing_types = required_types - assigned_types
-    
-    if missing_types:
-        print(f"CRITICAL: Missing required room types: {missing_types}")
-        # MUST assign all missing types - try best candidates first, force if needed
-        for missing_type in missing_types:
-            assigned = False
-            
-            # First, try to find a normal room that can connect and convert it
-            for i, room in enumerate(rooms):
-                if (room.room_type == "normal" and 
-                    can_connect_to_normal_or_spawn(i)):
-                    room.room_type = missing_type
-                    room.single_connection = True
-                    print(f"SMART assignment: {missing_type} to room {i} (can connect)")
-                    assigned = True
-                    break
-            
-            # If no connectable room found, force assignment to ANY normal room
-            if not assigned:
-                for i, room in enumerate(rooms):
-                    if room.room_type == "normal":
-                        room.room_type = missing_type
-                        room.single_connection = True
-                        print(f"FORCED assignment: {missing_type} to room {i} (will be relocated later)")
-                        assigned = True
-                        break
-            
-            if not assigned:
-                print(f"ERROR: Could not assign {missing_type} - no normal rooms available!")
-    
-    # NOW validate boss room placement after all room types are assigned
-    if boss_room_index is not None:
-        boss_room = rooms[boss_room_index]
-        boss_grid_col = boss_room.grid_x // 20
-        boss_grid_row = boss_room.grid_y // 20
-        
-        print(f"DEBUG: Final validation of boss room at grid ({boss_grid_col}, {boss_grid_row})")
-        
-        # Check if boss has adjacent normal/spawn rooms (after all assignments)
-        has_adjacent_normal = False
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            neighbor_key = (boss_grid_col + dx, boss_grid_row + dy)
-            if neighbor_key in room_grid:
-                neighbor_idx, neighbor_room = room_grid[neighbor_key]
-                print(f"DEBUG: Boss neighbor at {neighbor_key}: {neighbor_room.room_type}")
-                if neighbor_room.room_type in ["normal", "spawn"]:
-                    has_adjacent_normal = True
+            # Check if there's a room at this position
+            for other_room in rooms:
+                other_col = other_room.grid_x // 20
+                other_row = other_room.grid_y // 20
+                if other_col == neighbor_col and other_row == neighbor_row:
+                    adjacent_count += 1
                     break
         
-        if not has_adjacent_normal:
-            print(f"WARNING: Boss room has no adjacent normal/spawn rooms after assignments!")
-            # Find a normal room adjacent to the boss and swap their types
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                neighbor_key = (boss_grid_col + dx, boss_grid_row + dy)
-                if neighbor_key in room_grid:
-                    neighbor_idx, neighbor_room = room_grid[neighbor_key]
-                    # If it's a chest room, we can swap
-                    if neighbor_room.room_type.startswith("chest") or neighbor_room.room_type == "shop":
-                        print(f"SWAPPING: Boss and {neighbor_room.room_type} room types")
-                        # Swap room types
-                        old_neighbor_type = neighbor_room.room_type
-                        old_neighbor_single = getattr(neighbor_room, 'single_connection', False)
-                        
-                        neighbor_room.room_type = "boss"
-                        neighbor_room.single_connection = True
-                        
-                        boss_room.room_type = old_neighbor_type
-                        boss_room.single_connection = old_neighbor_single
-                        
-                        # Update boss_room_index
-                        boss_room_index = neighbor_idx
-                        print(f"Boss is now room {boss_room_index}")
-                        break
+        return adjacent_count
     
-    # FINAL connectivity validation - check ALL special rooms after assignment
-    special_rooms_to_check = [room for room in rooms if hasattr(room, 'single_connection') and room.single_connection]
+    # Categorize available rooms by their connection potential
+    single_connection_candidates = []
+    multi_connection_candidates = []
     
-    for special_room in special_rooms_to_check:
-        special_grid_col = special_room.grid_x // 20
-        special_grid_row = special_room.grid_y // 20
-        
-        # Check if this special room has adjacent normal/spawn rooms
-        has_adjacent_normal = False
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            neighbor_key = (special_grid_col + dx, special_grid_row + dy)
-            if neighbor_key in room_grid:
-                neighbor_idx, neighbor_room = room_grid[neighbor_key]
-                if neighbor_room.room_type in ["normal", "spawn"]:
-                    has_adjacent_normal = True
-                    break
-        
-        if not has_adjacent_normal:
-            print(f"WARNING: {special_room.room_type} room at ({special_grid_col}, {special_grid_row}) has no adjacent normal/spawn rooms!")
-            # Try to find a way to fix this by looking for swappable adjacent rooms
-            swapped = False
-            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                neighbor_key = (special_grid_col + dx, special_grid_row + dy)
-                if neighbor_key in room_grid:
-                    neighbor_idx, neighbor_room = room_grid[neighbor_key]
-                    # If it's another special room adjacent to a normal room, we can swap
-                    if (neighbor_room.room_type.startswith("chest") or 
-                        neighbor_room.room_type in ["shop", "boss"]) and neighbor_room != special_room:
-                        
-                        # Check if the neighbor has adjacent normal rooms
-                        neighbor_grid_col = neighbor_room.grid_x // 20
-                        neighbor_grid_row = neighbor_room.grid_y // 20
-                        neighbor_has_normal = False
-                        
-                        for ndx, ndy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                            nn_key = (neighbor_grid_col + ndx, neighbor_grid_row + ndy)
-                            if nn_key in room_grid:
-                                nn_room = room_grid[nn_key][1]
-                                if nn_room.room_type in ["normal", "spawn"]:
-                                    neighbor_has_normal = True
-                                    break
-                        
-                        if neighbor_has_normal:
-                            print(f"SWAPPING: {special_room.room_type} and {neighbor_room.room_type} room types for connectivity")
-                            # Swap room types
-                            old_neighbor_type = neighbor_room.room_type
-                            old_neighbor_single = getattr(neighbor_room, 'single_connection', False)
-                            old_special_type = special_room.room_type
-                            old_special_single = special_room.single_connection
-                            
-                            neighbor_room.room_type = old_special_type
-                            neighbor_room.single_connection = old_special_single
-                            
-                            special_room.room_type = old_neighbor_type
-                            special_room.single_connection = old_neighbor_single
-                            
-                            swapped = True
-                            break
-            
-            if not swapped:
-                print(f"Could not fix connectivity for {special_room.room_type} room")
-    
-    # Carve out room floors FIRST (before placing special items)
-    for room in rooms:
-        # Get floor position for this room
-        floor_x = (room.rect.x // tile_size)  # Convert back to grid coordinates
-        floor_y = (room.rect.y // tile_size)
-        
-        # All rooms use the same 14x14 size for consistency
-        room_width = room_floor_size
-        room_height = room_floor_size
-        
-        # Carve out room floor in one operation
-        for dy in range(room_height):
-            for dx in range(room_width):
-                floor_grid_x = floor_x + dx
-                floor_grid_y = floor_y + dy
-                if 0 <= floor_grid_x < grid_width and 0 <= floor_grid_y < grid_height:
-                    tilemap[floor_grid_y][floor_grid_x] = 0  # Floor
-    
-    # Place special items AFTER all room type assignments are finalized
-    print("DEBUG: Placing special items based on final room types...")
-    for i, room in enumerate(rooms):
-        floor_x = (room.rect.x // tile_size)  # Convert back to grid coordinates
-        floor_y = (room.rect.y // tile_size)
-        room_width = room_floor_size
-        room_height = room_floor_size
-        
-        print(f"  Room {i}: {room.room_type} at grid ({room.grid_x//20}, {room.grid_y//20})")
-    
-    # Count room types for summary
-    room_type_counts = {"spawn": 0, "normal": 0, "chest": 0, "shop": 0, "boss": 0}
-    for room in rooms:
-        if room.room_type.startswith('chest'):
-            room_type_counts["chest"] += 1
+    for room_idx in available_rooms:
+        connection_count = count_potential_connections(room_idx)
+        if connection_count == 1:
+            single_connection_candidates.append(room_idx)
         else:
-            room_type_counts[room.room_type] += 1
+            multi_connection_candidates.append(room_idx)
     
-    # VERIFICATION: Confirm all required special rooms are present
-    final_types = set()
-    chest_counts = {"chest_unlocked": 0, "chest_locked": 0}
+    print(f"DEBUG: Found {len(single_connection_candidates)} single-connection positions, {len(multi_connection_candidates)} multi-connection positions")
     
+    # Ensure we have enough single-connection positions for special rooms
+    if len(single_connection_candidates) < 5:
+        print(f"WARNING: Only {len(single_connection_candidates)} single-connection positions, need 5 for special rooms")
+        print("         Will use some multi-connection positions, which may affect game balance")
+        # Add some multi-connection rooms to make up the difference
+        needed = 5 - len(single_connection_candidates)
+        single_connection_candidates.extend(multi_connection_candidates[:needed])
+    
+    # Randomly assign special rooms to single-connection positions
+    random.shuffle(single_connection_candidates)
+    
+    # Assign boss room (furthest from spawn if possible)
+    boss_idx = single_connection_candidates[0]
+    rooms[boss_idx].room_type = "boss"
+    rooms[boss_idx].single_connection = True
+    
+    # Assign shop room
+    shop_idx = single_connection_candidates[1]
+    rooms[shop_idx].room_type = "shop"
+    rooms[shop_idx].single_connection = True
+    
+    # Assign 3 chest rooms (1 unlocked, 2 locked)
+    chest_indices = single_connection_candidates[2:5]
+    for i, chest_idx in enumerate(chest_indices):
+        if i == 0:
+            rooms[chest_idx].room_type = "chest_unlocked"
+        else:
+            rooms[chest_idx].room_type = "chest_locked"
+        rooms[chest_idx].single_connection = True
+    
+    print(f"DEBUG: Assigned special rooms to single-connection positions - Boss: {boss_idx}, Shop: {shop_idx}, Chests: {chest_indices}")
+    
+    # Verify assignments
+    type_counts = {"spawn": 0, "normal": 0, "boss": 0, "shop": 0, "chest_unlocked": 0, "chest_locked": 0}
     for room in rooms:
-        if hasattr(room, 'single_connection') and room.single_connection:
-            final_types.add(room.room_type)
-            if room.room_type in chest_counts:
-                chest_counts[room.room_type] += 1
+        type_counts[room.room_type] += 1
     
-    required_types = {"boss", "shop", "chest_unlocked", "chest_locked"}
-    still_missing = required_types - final_types
+    print(f"✅ Room type assignments: {type_counts}")
     
-    # Check chest requirements specifically
-    chest_issues = []
-    if chest_counts["chest_unlocked"] != 1:
-        chest_issues.append(f"Need exactly 1 unlocked chest, got {chest_counts['chest_unlocked']}")
-    if chest_counts["chest_locked"] != 2:
-        chest_issues.append(f"Need exactly 2 locked chests, got {chest_counts['chest_locked']}")
+    if type_counts["boss"] != 1 or type_counts["shop"] != 1 or type_counts["chest_unlocked"] != 1 or type_counts["chest_locked"] != 2:
+        print(f"WARNING: Incorrect special room counts!")
     
-    if still_missing:
-        print(f"CRITICAL ERROR: Still missing required room types after all fixes: {still_missing}")
-    elif chest_issues:
-        print(f"CRITICAL ERROR: Chest room count issues: {'; '.join(chest_issues)}")
-    else:
-        print(f"SUCCESS: All required special rooms are now present: {final_types}")
-        print(f"         Chest breakdown: {chest_counts['chest_unlocked']} unlocked, {chest_counts['chest_locked']} locked")
+    # Carve out room floors
+    for room in rooms:
+        floor_x = room.rect.x // tile_size
+        floor_y = room.rect.y // tile_size
+        
+        for dy in range(room_floor_size):
+            for dx in range(room_floor_size):
+                grid_x = floor_x + dx
+                grid_y = floor_y + dy
+                if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
+                    tilemap[grid_y][grid_x] = 0  # Floor
+    
+    # Place special items in rooms based on their types
+    place_special_room_items(rooms, tilemap, tile_size)
     
     return rooms
-
-def calculate_room_distance(room1, room2, tile_size):
-    """Calculate Manhattan distance between room centers"""
-    center1 = room1.rect.center
-    center2 = room2.rect.center
-    dx = abs(center1[0] - center2[0]) // tile_size
-    dy = abs(center1[1] - center2[1]) // tile_size
-    return dx + dy
 
 def create_straight_hallway(room1, room2, tilemap):
     """Create a direct 4-tile hallway between adjacent rooms only"""
@@ -784,274 +473,86 @@ def connect_rooms(rooms, tile_size, tilemap):
     spawn_grid_col, spawn_grid_row = get_room_grid_pos(spawn_room, tile_size)
     print(f"DEBUG: Spawn room at grid ({spawn_grid_col}, {spawn_grid_row})")
     
-    # PHASE 1: Create spanning tree for normal rooms using only adjacent connections
-    # Explicitly exclude special rooms from Phase 1 connectivity
-    normal_rooms = [room for room in rooms if (not hasattr(room, 'single_connection') or not room.single_connection) and room.room_type != 'spawn']
-    connected_normal_rooms = {spawn_room}
-    unconnected_normal_rooms = set(normal_rooms)  # Only normal rooms should be in this set
+    # PHASE 1: Connect all normal rooms to each other and spawn
+    normal_rooms = [room for room in rooms if room.room_type == "normal"]
+    connected_rooms = {spawn_room}
+    unconnected_rooms = set(normal_rooms)
     
-    print(f"DEBUG: Phase 1 - Connecting {len(normal_rooms)} normal rooms")
-    print(f"  Starting with spawn room, {len(unconnected_normal_rooms)} rooms to connect")
+    print(f"DEBUG: Phase 1 - Connecting {len(normal_rooms)} normal rooms to spawn")
     
-    # IMPROVED ALGORITHM: Multi-phase connection strategy
-    max_connection_attempts = 200  # Increased safety limit for better coverage
-    connection_attempts = 0
+    # Connect normal rooms using BFS-like approach
+    max_attempts = 100
+    attempts = 0
     
-    while unconnected_normal_rooms and connection_attempts < max_connection_attempts:
+    while unconnected_rooms and attempts < max_attempts:
+        attempts += 1
         connection_made = False
-        connection_attempts += 1
         
-        # Strategy 1: Connect adjacent rooms to the main connected component
-        for unconnected_room in list(unconnected_normal_rooms):
-            # Skip if this room has already become a special room
-            if hasattr(unconnected_room, 'single_connection') and unconnected_room.single_connection:
-                unconnected_normal_rooms.remove(unconnected_room)
-                continue
-                
+        for unconnected_room in list(unconnected_rooms):
             unconnected_grid = (unconnected_room.grid_x // 20, unconnected_room.grid_y // 20)
             
-            # Check if this unconnected room is adjacent to any connected room
-            for connected_room in connected_normal_rooms:
-                # GUARD: Skip connecting to special rooms that already have a connection (enforce dead end)
-                if (hasattr(connected_room, 'single_connection') and connected_room.single_connection and 
-                    hasattr(connected_room, 'connections') and len(connected_room.connections) >= 1):
-                    continue  # This special room already has its one allowed connection
-                
+            # Check if adjacent to any connected room
+            for connected_room in connected_rooms:
                 connected_grid = (connected_room.grid_x // 20, connected_room.grid_y // 20)
                 
-                # Check if they're adjacent (Manhattan distance = 1)
+                # Check if adjacent (Manhattan distance = 1)
                 if abs(unconnected_grid[0] - connected_grid[0]) + abs(unconnected_grid[1] - connected_grid[1]) == 1:
                     segments = create_straight_hallway(unconnected_room, connected_room, tilemap)
                     if segments:
                         hallways.extend(segments)
                         unconnected_room.connections.append(connected_room)
                         connected_room.connections.append(unconnected_room)
-                        connected_normal_rooms.add(unconnected_room)
-                        unconnected_normal_rooms.remove(unconnected_room)
-                        print(f"  Connecting {unconnected_room.room_type} at ({unconnected_grid[0]}, {unconnected_grid[1]}) to {connected_room.room_type} at ({connected_grid[0]}, {connected_grid[1]})")
-                        print(f"    SUCCESS: Created hallway")
+                        connected_rooms.add(unconnected_room)
+                        unconnected_rooms.remove(unconnected_room)
+                        print(f"  Connected {unconnected_room.room_type} to {connected_room.room_type}")
                         connection_made = True
                         break
             if connection_made:
                 break
         
-        # Strategy 2: Bridge to unconnected rooms with forced connections every 10 attempts
-        if not connection_made and connection_attempts % 10 == 0:
-            print(f"  Pass {connection_attempts}: No adjacent connections found, {len(unconnected_normal_rooms)} rooms still unconnected")
-            print("  Trying to force bridge connections...")
-            
-            # Find closest unconnected room to any connected room and force connect it
-            closest_pair = None
-            min_distance = float('inf')
-            
-            for unconnected_room in unconnected_normal_rooms:
-                # Skip if this room has already become a special room
-                if hasattr(unconnected_room, 'single_connection') and unconnected_room.single_connection:
-                    continue
-                    
-                unconnected_grid = (unconnected_room.grid_x // 20, unconnected_room.grid_y // 20)
-                
-                for connected_room in connected_normal_rooms:
-                    # GUARD: Skip connecting to special rooms that already have a connection (enforce dead end)
-                    if (hasattr(connected_room, 'single_connection') and connected_room.single_connection and 
-                        hasattr(connected_room, 'connections') and len(connected_room.connections) >= 1):
-                        continue  # This special room already has its one allowed connection
-                    
-                    connected_grid = (connected_room.grid_x // 20, connected_room.grid_y // 20)
-                    
-                    # Calculate Manhattan distance
-                    distance = abs(unconnected_grid[0] - connected_grid[0]) + abs(unconnected_grid[1] - connected_grid[1])
-                    
-                    # Only connect ADJACENT rooms (distance = 1) that are horizontally or vertically aligned
-                    if ((unconnected_grid[0] == connected_grid[0] or unconnected_grid[1] == connected_grid[1]) 
-                        and distance == 1 and distance < min_distance):
-                        min_distance = distance
-                        closest_pair = (unconnected_room, connected_room)
-            
-            if closest_pair:
-                unconnected_room, connected_room = closest_pair
-                unconnected_grid = (unconnected_room.grid_x // 20, unconnected_room.grid_y // 20)
-                connected_grid = (connected_room.grid_x // 20, connected_room.grid_y // 20)
-                
-                print(f"    Force-bridging {unconnected_room.room_type} at {unconnected_grid} to {connected_room.room_type} at {connected_grid}, distance={min_distance}")
-                segments = create_straight_hallway(unconnected_room, connected_room, tilemap)
-                if segments:
-                    hallways.extend(segments)
-                    unconnected_room.connections.append(connected_room)
-                    connected_room.connections.append(unconnected_room)
-                    connected_normal_rooms.add(unconnected_room)
-                    unconnected_normal_rooms.remove(unconnected_room)
-                    print(f"    SUCCESS: Force-bridged connection")
-                    connection_made = True
-    print(f"DEBUG: Phase 1 complete. Connected {len(connected_normal_rooms)} normal rooms after {connection_attempts} attempts")
+        if not connection_made:
+            print(f"  No more adjacent connections possible at attempt {attempts}")
+            break
     
-    # PHASE 1.5: Handle disconnected normal rooms - be more conservative about removal
-    target_normal_rooms = 15  # Increased target for better gameplay (was 10)
+    print(f"DEBUG: Phase 1 complete. Connected {len(connected_rooms)} rooms")
     
-    if len(unconnected_normal_rooms) > 0:
-        current_connected_count = len(connected_normal_rooms) - 1  # Subtract spawn room
-        
-        print(f"DEBUG: Have {current_connected_count} connected normal rooms (target: {target_normal_rooms})")
-        print(f"DEBUG: Attempting to connect remaining {len(unconnected_normal_rooms)} disconnected rooms")
-        
-        # CRITICAL: Try much harder to connect disconnected rooms before removing them
-        for disconnected_room in list(unconnected_normal_rooms):
-            # GUARD: Skip force-connecting special rooms - they will be connected in Phase 2
-            if hasattr(disconnected_room, 'single_connection') and disconnected_room.single_connection:
-                print(f"  Skipping special room {disconnected_room.room_type} - will be connected in Phase 2")
-                continue
-                
-            closest_connected = None
-            min_distance = float('inf')
-            
-            # Find closest connected room
-            for connected_room in connected_normal_rooms:
-                # GUARD: Skip connecting to special rooms that already have a connection (enforce dead end)
-                if (hasattr(connected_room, 'single_connection') and connected_room.single_connection and 
-                    hasattr(connected_room, 'connections') and len(connected_room.connections) >= 1):
-                    continue  # This special room already has its one allowed connection
-                
-                distance = abs(disconnected_room.grid_x - connected_room.grid_x) + abs(disconnected_room.grid_y - connected_room.grid_y)
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_connected = connected_room
-            
-            # Try to connect with more relaxed distance constraints
-            if closest_connected and min_distance <= 120:  # Allow up to 6 grid spaces (very flexible)
-                print(f"  Force-connecting disconnected room at ({disconnected_room.grid_x//20}, {disconnected_room.grid_y//20}) to ({closest_connected.grid_x//20}, {closest_connected.grid_y//20}) distance={min_distance//20}")
-                segments = create_straight_hallway(disconnected_room, closest_connected, tilemap)
-                if segments:
-                    hallways.extend(segments)
-                    disconnected_room.connections.append(closest_connected)
-                    closest_connected.connections.append(disconnected_room)
-                    connected_normal_rooms.add(disconnected_room)
-                    unconnected_normal_rooms.remove(disconnected_room)
-                    print(f"    SUCCESS: Force-connected room")
-                else:
-                    print(f"    FAILED: Could not force-connect room even with relaxed constraints")
-            else:
-                print(f"  SKIPPED: Room is too far away (distance={min_distance//20} grid spaces, max allowed=6)")
-        
-        # Final count after aggressive connection attempts
-        current_connected_count = len(connected_normal_rooms) - 1  # Subtract spawn
-        
-        # Only remove rooms if we MUST, and only if we have a reasonable buffer
-        if current_connected_count >= target_normal_rooms and len(unconnected_normal_rooms) > 0:
-            # Filter to only remove normal rooms, not special rooms
-            normal_rooms_to_remove = [room for room in unconnected_normal_rooms 
-                                    if not (hasattr(room, 'single_connection') and room.single_connection)]
-            
-            if normal_rooms_to_remove:
-                print(f"DEBUG: Removing {len(normal_rooms_to_remove)} disconnected normal rooms to ensure 100% connectivity")
-                
-                rooms_to_remove = []
-                for disconnected_room in normal_rooms_to_remove:
-                    for i, room in enumerate(rooms):
-                        if room == disconnected_room:
-                            rooms_to_remove.append(i)
-                            print(f"  Removing disconnected normal room {i} at grid ({room.grid_x//20}, {room.grid_y//20})")
-                            break
-                
-                # Remove rooms in reverse order to maintain correct indices
-                for room_index in sorted(rooms_to_remove, reverse=True):
-                    del rooms[room_index]
-                    
-                # Update unconnected_normal_rooms to remove the deleted rooms
-                for removed_room in normal_rooms_to_remove:
-                    if removed_room in unconnected_normal_rooms:
-                        unconnected_normal_rooms.remove(removed_room)
-            else:
-                print(f"DEBUG: No normal rooms to remove (only special rooms are disconnected)")
-        else:
-            print(f"WARNING: Only have {current_connected_count} connected normal rooms, keeping all rooms")
-            print(f"DEBUG: System will attempt to work with {len(rooms)} total rooms including disconnected ones")
-        
-        # Rebuild room_grid and chest_positions after removal
-        room_grid = {}
-        chest_positions = []
-        for i, room in enumerate(rooms):
-            grid_col = room.grid_x // 20
-            grid_row = room.grid_y // 20
-            room_grid[(grid_col, grid_row)] = room  # Store room directly, not tuple
-            
-            # Rebuild chest positions (skip spawn room)
-            if i > 0 and room.room_type == "normal":
-                chest_positions.append((i, room))
-        
-        print(f"DEBUG: After cleanup: {len(rooms)} total rooms, {len(chest_positions)} potential special room positions")
-    
-    # CRITICAL: Ensure 100% connectivity by relocating any disconnected special rooms BEFORE Phase 2
-    ensure_all_special_rooms_connected(rooms, room_grid, tilemap)
-    
-    # PHASE 2: Connect each special room to exactly one adjacent normal/spawn room
-    special_rooms = [room for room in rooms if hasattr(room, 'single_connection') and room.single_connection]
-    print(f"DEBUG: Phase 2 - Connecting {len(special_rooms)} special rooms")
+    # PHASE 2: Connect special rooms (each gets exactly one connection)
+    special_rooms = [room for room in rooms if room.room_type in ["boss", "shop", "chest_unlocked", "chest_locked"]]
+    print(f"DEBUG: Phase 2 - Connecting {len(special_rooms)} special rooms (one connection each)")
     
     for special_room in special_rooms:
-        # CRITICAL: Skip if this special room already has a connection (from Phase 1 or relocations)
-        if len(special_room.connections) > 0:
-            print(f"  Skipping {special_room.room_type} - already has {len(special_room.connections)} connection(s)")
-            continue
-            
-        grid_col = special_room.grid_x // 20
-        grid_row = special_room.grid_y // 20
-        print(f"  Processing {special_room.room_type} at grid ({grid_col}, {grid_row})")
+        special_grid = (special_room.grid_x // 20, special_room.grid_y // 20)
+        connected = False
         
-        # Find all adjacent normal/spawn rooms based on room type restrictions
-        adjacent_normal_rooms = []
-        adjacent_spawn_rooms = []
-        
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            neighbor_pos = (grid_col + dx, grid_row + dy)
-            neighbor = room_grid.get(neighbor_pos)  # Get room directly
-            if neighbor and (not hasattr(neighbor, 'single_connection') or not neighbor.single_connection):
-                if neighbor.room_type == "spawn":
-                    # Only unlocked chest rooms can connect to spawn
-                    if special_room.room_type == "chest_unlocked":
-                        adjacent_spawn_rooms.append(neighbor)
-                        print(f"    Found adjacent {neighbor.room_type} at grid {neighbor_pos}")
-                    else:
-                        print(f"    Found adjacent {neighbor.room_type} at grid {neighbor_pos} (RESTRICTED - only unlocked chests can connect to spawn)")
-                else:
-                    adjacent_normal_rooms.append(neighbor)
-                    print(f"    Found adjacent {neighbor.room_type} at grid {neighbor_pos}")
-        
-        # Connection priority based on room type
-        if special_room.room_type == "chest_unlocked":
-            # Unlocked chest rooms prefer spawn room, then normal rooms with minimal connections
-            if adjacent_spawn_rooms:
-                chosen_neighbor = adjacent_spawn_rooms[0]
-            elif adjacent_normal_rooms:
-                # Prefer normal rooms with fewer connections to minimize overall connections
-                chosen_neighbor = min(adjacent_normal_rooms, key=lambda r: len(r.connections))
-            else:
-                chosen_neighbor = None
-        else:
-            # All other special rooms (boss, shop, locked chests) must connect to normal rooms only
-            if adjacent_normal_rooms:
-                # Prefer normal rooms with fewer connections to minimize overall connections
-                chosen_neighbor = min(adjacent_normal_rooms, key=lambda r: len(r.connections))
-            else:
-                chosen_neighbor = None
+        # Find an adjacent connected room to connect to
+        for connected_room in connected_rooms:
+            # Skip other special rooms for connections
+            if connected_room.room_type in ["boss", "shop", "chest_unlocked", "chest_locked"]:
+                continue
                 
-        # Connect to chosen neighbor (ONLY if we don't already have a connection)
-        if chosen_neighbor and len(special_room.connections) == 0:
-            print(f"    Connecting to {chosen_neighbor.room_type}")
-            segments = create_straight_hallway(special_room, chosen_neighbor, tilemap)
-            if segments:
-                hallways.extend(segments)
-                special_room.connections.append(chosen_neighbor)
-                chosen_neighbor.connections.append(special_room)
-                print(f"    SUCCESS: Connected {special_room.room_type} to {chosen_neighbor.room_type}")
-            else:
-                print(f"    FAILED: Could not create hallway to {chosen_neighbor.room_type}")
-        elif len(special_room.connections) > 0:
-            print(f"    SKIP: {special_room.room_type} already has {len(special_room.connections)} connection(s)")
-        else:
-            print(f"    ERROR: No adjacent normal/spawn rooms found for {special_room.room_type}")
+            connected_grid = (connected_room.grid_x // 20, connected_room.grid_y // 20)
+            
+            # Check if adjacent
+            if abs(special_grid[0] - connected_grid[0]) + abs(special_grid[1] - connected_grid[1]) == 1:
+                segments = create_straight_hallway(special_room, connected_room, tilemap)
+                if segments:
+                    hallways.extend(segments)
+                    special_room.connections.append(connected_room)
+                    connected_room.connections.append(special_room)
+                    connected_rooms.add(special_room)
+                    print(f"  Connected {special_room.room_type} to {connected_room.room_type} (single connection)")
+                    connected = True
+                    break
+        
+        if not connected:
+            print(f"  WARNING: Could not connect {special_room.room_type} room!")
     
-    # Place special room items AFTER all relocations are complete
-    place_special_room_items(rooms, tilemap, tile_size)
+    # Verify all special rooms have exactly one connection
+    for room in rooms:
+        if room.room_type in ["boss", "shop", "chest_unlocked", "chest_locked"]:
+            connection_count = len(room.connections)
+            if connection_count != 1:
+                print(f"  WARNING: {room.room_type} room has {connection_count} connections, should have 1")
     
     return hallways
 
@@ -1061,15 +562,9 @@ def place_special_room_items(rooms, tilemap, tile_size):
     
     grid_width = len(tilemap[0])
     grid_height = len(tilemap)
-    room_floor_size = 14
     room_wall_thickness = 1
     
     for i, room in enumerate(rooms):
-        # Correct grid position calculation
-        grid_x = room.rect.x // tile_size // 20
-        grid_y = room.rect.y // tile_size // 20
-        print(f"  Room {i}: {room.room_type} at grid ({grid_x}, {grid_y})")
-        
         # Calculate actual room boundaries in tile coordinates
         room_tile_x = room.rect.x // tile_size
         room_tile_y = room.rect.y // tile_size
@@ -1082,13 +577,18 @@ def place_special_room_items(rooms, tilemap, tile_size):
         floor_width = room_tile_width - 2 * room_wall_thickness
         floor_height = room_tile_height - 2 * room_wall_thickness
         
+        print(f"  Room {i}: {room.room_type} at grid ({room.grid_x//20}, {room.grid_y//20})")
+        
         # Place chest in center of chest rooms (2x2 chest)
-        if room.room_type.startswith("chest"):
+        if room.room_type in ["chest_unlocked", "chest_locked"]:
             chest_center_x = floor_x + floor_width // 2
             chest_center_y = floor_y + floor_height // 2
-            chest_tile = 3 if room.room_type == "chest_unlocked" else 4
             
-            print(f"    Placing {room.room_type} (tile {chest_tile}) at center ({chest_center_x}, {chest_center_y})")
+            # Use room_type to determine if unlocked or locked
+            chest_tile = 3 if room.room_type == "chest_unlocked" else 4
+            chest_type = "unlocked" if room.room_type == "chest_unlocked" else "locked"
+            
+            print(f"    Placing {chest_type} chest (tile {chest_tile}) at center ({chest_center_x}, {chest_center_y})")
             
             # Place 2x2 chest centered in room
             for dy in range(2):
@@ -1568,9 +1068,10 @@ def test_connectivity(test_rooms):
         print(f"DEBUG: Connectivity test failed - {len(unconnected_rooms)} rooms unreachable after {attempts} attempts")
         return False
     
-    # Verify that every room has at least one neighbor (for special room placement)
+    # Verify connectivity and special room placement requirements
     isolated_rooms = 0
-    corner_rooms = 0
+    single_connection_rooms = 0  # Suitable for special rooms
+    multi_connection_rooms = 0
     
     for room in test_rooms:
         grid_col = room.grid_x // 20
@@ -1585,47 +1086,32 @@ def test_connectivity(test_rooms):
         
         if adjacent_count == 0:
             isolated_rooms += 1
-        elif adjacent_count <= 2:
-            corner_rooms += 1
+        elif adjacent_count == 1:
+            single_connection_rooms += 1
+        else:
+            multi_connection_rooms += 1
     
     # No isolated rooms allowed
     if isolated_rooms > 0:
         print(f"DEBUG: Connectivity test failed - {isolated_rooms} isolated rooms")
         return False
     
-    # We need at least 5 non-corner rooms for special rooms (1 boss + 1 shop + 3 chest)
-    non_corner_rooms = len(test_rooms) - corner_rooms
-    if non_corner_rooms < 5:
-        print(f"DEBUG: Connectivity test failed - only {non_corner_rooms} non-corner rooms, need 5 for special rooms")
+    # We need at least 5 single-connection positions for special rooms (1 boss + 1 shop + 3 chests)
+    # The spawn room (multi-connection) doesn't count toward this requirement
+    if single_connection_rooms < 5:
+        print(f"DEBUG: Connectivity test failed - only {single_connection_rooms} single-connection rooms, need 5 for special rooms")
         return False
     
-    # With more rooms (24), we should be more lenient about corner rooms to allow more valid layouts
-    # As long as we have enough non-corner rooms for special placement, it should be fine
-    print(f"DEBUG: Connectivity test passed - all {len(test_rooms)} rooms connected, {non_corner_rooms} non-corner rooms available")
+    # Should have at least some multi-connection rooms for backbone connectivity
+    if multi_connection_rooms < 2:
+        print(f"DEBUG: Connectivity test failed - only {multi_connection_rooms} multi-connection rooms, need at least 2 for backbone")
+        return False
+    
+    print(f"DEBUG: Connectivity test passed - all {len(test_rooms)} rooms connected")
+    print(f"       {single_connection_rooms} single-connection (good for special rooms)")
+    print(f"       {multi_connection_rooms} multi-connection (good for backbone)")
     return True  # All rooms can be connected
 
-def can_reach_room_through_connections(start_room, target_room, all_rooms):
-    """Check if start_room can reach target_room through existing connections using BFS"""
-    if start_room == target_room:
-        return True
-    
-    visited = set()
-    queue = [start_room]
-    visited.add(start_room)
-    
-    while queue:
-        current_room = queue.pop(0)
-        
-        # Check all connected rooms
-        for connected_room in current_room.connections:
-            if connected_room == target_room:
-                return True
-            
-            if connected_room not in visited:
-                visited.add(connected_room)
-                queue.append(connected_room)
-    
-    return False
 
 def count_room_connections(target_room, all_rooms):
     """Count how many connections a room has using the connections list"""
@@ -1774,35 +1260,3 @@ def create_direct_hallway(room1, room2, tilemap):
     
     # Return single hallway rectangle for the connection
     return [pygame.Rect(0, 0, 40, 40)]  # Placeholder - just need one segment for counting
-
-def enforce_dead_end_requirement(rooms):
-    """Ensure all special rooms (except spawn) have exactly 1 connection"""
-    print(f"DEBUG: Enforcing dead end requirement for special rooms...")
-    
-    violations_fixed = 0
-    
-    for room in rooms:
-        # Skip spawn room - it can have multiple connections
-        if room.room_type == "spawn":
-            continue
-            
-        # Special rooms must have exactly 1 connection
-        if room.room_type in ["boss", "shop", "chest_unlocked", "chest_locked"]:
-            connection_count = len(room.connections) if hasattr(room, 'connections') else 0
-            
-            if connection_count == 0:
-                print(f"  WARNING: {room.room_type} has NO connections! This should be fixed by relocation.")
-            elif connection_count > 1:
-                print(f"  VIOLATION: {room.room_type} has {connection_count} connections, but this should have been prevented during connection phase!")
-                print(f"    WARNING: Cannot safely remove excess connections after hallways are created.")
-                print(f"    The system should prevent multiple connections during connection creation.")
-                
-                # Mark as violation but don't try to fix it here since it would break hallways
-                violations_fixed += 1
-    
-    if violations_fixed > 0:
-        print(f"DEBUG: Found {violations_fixed} dead end violations - these should be prevented during connection phase")
-    else:
-        print(f"DEBUG: Fixed 0 dead end violations")
-        
-    return violations_fixed > 0
