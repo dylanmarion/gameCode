@@ -8,6 +8,7 @@ from entities.wall import Wall
 from entities.enemy import Enemy
 from entities.bullet import Bullet
 from utils.camera import Camera
+from utils.spatial_grid import SpatialGrid
 from scenes.hole_room import HoleRoom
 
 # Initialize Pygame
@@ -512,6 +513,10 @@ def main():
                 wall = Wall(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE)
                 walls.add(wall)
 
+    # Create spatial grid for optimized collision detection
+    wall_spatial_grid = SpatialGrid(cell_size=TILE_SIZE * 2)  # Each cell is 2x2 tiles
+    wall_spatial_grid.build_from_sprite_group(walls)
+
     # Create Player - spawn in spawn room
     spawn_room = None
     for room in rooms:
@@ -605,6 +610,8 @@ def main():
             
             # Only update enemies that are reasonably close to the camera
             if distance <= max_enemy_update_distance:
+                # Set the spatial grid reference for optimized collision detection
+                enemy.wall_spatial_grid = wall_spatial_grid
                 enemy.update(player)
 
         # Check if player stepped on a hole tile
@@ -986,6 +993,11 @@ def main():
             
         # Draw UI
         player.draw_health_bar(screen, camera)
+
+        # Calculate and display FPS
+        current_fps = clock.get_fps()
+        fps_text = pygame.font.Font(None, 36).render(f"FPS: {current_fps:.1f}", True, (255, 255, 255))
+        screen.blit(fps_text, (10, 10))
         
         # Draw crosshair at mouse position
         mouse_x, mouse_y = pygame.mouse.get_pos()

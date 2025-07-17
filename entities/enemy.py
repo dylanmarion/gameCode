@@ -7,6 +7,7 @@ class Enemy(pygame.sprite.Sprite):
         super().__init__()
         self.enemy_type = enemy_type
         self.walls = walls
+        self.wall_spatial_grid = None  # Will be set from outside
         
         # Visual properties
         self.image = pygame.Surface((30, 30))
@@ -84,10 +85,42 @@ class Enemy(pygame.sprite.Sprite):
         self.velocity_y = math.sin(self.wander_direction) * self.speed * 0.3
         
     def move(self, dx, dy):
-        """Move with collision detection"""
+        """Move with optimized collision detection using spatial grid"""
+        # Early exit if not moving
+        if dx == 0 and dy == 0:
+            return
+        
+        # Use spatial grid if available, otherwise fall back to distance-based filtering
+        if self.wall_spatial_grid:
+            nearby_walls = self.wall_spatial_grid.get_nearby_objects(self.rect, padding=20)
+        else:
+            # Fallback to distance-based filtering
+            nearby_walls = []
+            enemy_center_x = self.rect.centerx
+            enemy_center_y = self.rect.centery
+            
+            # Only check walls within a reasonable distance
+            check_distance = 60  # Adjust based on your tile size and enemy size
+            
+            for wall in self.walls:
+                wall_center_x = wall.rect.centerx
+                wall_center_y = wall.rect.centery
+                
+                # Use Manhattan distance for speed (no sqrt needed)
+                distance = abs(enemy_center_x - wall_center_x) + abs(enemy_center_y - wall_center_y)
+                
+                if distance <= check_distance:
+                    nearby_walls.append(wall)
+        
+        # If no nearby walls, skip collision detection entirely
+        if not nearby_walls:
+            self.rect.x += dx
+            self.rect.y += dy
+            return
+        
         # Horizontal movement
         self.rect.x += dx
-        collided = pygame.sprite.spritecollideany(self, self.walls)
+        collided = pygame.sprite.spritecollideany(self, nearby_walls)
         if collided:
             if dx > 0:
                 self.rect.right = collided.rect.left
@@ -97,7 +130,7 @@ class Enemy(pygame.sprite.Sprite):
             
         # Vertical movement
         self.rect.y += dy
-        collided = pygame.sprite.spritecollideany(self, self.walls)
+        collided = pygame.sprite.spritecollideany(self, nearby_walls)
         if collided:
             if dy > 0:
                 self.rect.bottom = collided.rect.top
